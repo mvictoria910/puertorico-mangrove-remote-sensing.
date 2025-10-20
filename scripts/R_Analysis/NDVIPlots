@@ -1,0 +1,346 @@
+setwd("C:/Users/marie/OneDrive - East Carolina University/RStudio")
+getwd()
+install.packages("multcomp")
+
+# ========================
+# Load necessary libraries
+# ========================
+library(tidyverse)
+library(scales)
+library(multcomp)
+
+# ========================
+# Read the CSV file (replace with your file name)
+# ========================
+df_ndvi <- read.csv("sampleCCDCmaxImageLossV8_03132025.csv", stringsAsFactors = FALSE)
+
+# ========================
+# Filter the data to keep only rows where allMangrove == 1 and Year_Integer <= 2024
+# ========================
+df_ndvi <- df_ndvi %>% 
+  filter(allMangrove == 1, floor(tBreak) <= 2024)
+
+# ========================
+# Create a function to convert tBreak to year + quarter groups
+# ========================
+convert_to_quarter <- function(tBreak) {
+  year_integer <- floor(tBreak)
+  decimal_part <- tBreak - year_integer
+  
+  # Assign quarter based on decimal values
+  quarter <- case_when(
+    decimal_part >= 0.00 & decimal_part <= 0.25  ~ 1,  # Q1
+    decimal_part > 0.25 & decimal_part <= 0.50   ~ 2,  # Q2
+    decimal_part > 0.50 & decimal_part <= 0.75   ~ 3,  # Q3
+    decimal_part > 0.75 & decimal_part <= 0.9999 ~ 4,  # Q4
+    TRUE ~ NA_real_
+  )
+  
+  # Return year and quarter for grouping
+  return(paste0(year_integer, " Q", quarter))
+}
+
+# ========================
+# Apply the conversion function to create a new quarter label
+# ========================
+df_ndvi <- df_ndvi %>%
+  mutate(tBreak_quarter = convert_to_quarter(tBreak),
+         Year_Integer = floor(tBreak))  # Extract year for x-axis grouping
+
+# ========================
+# Calculate Standard Deviation for the Entire Dataset
+# ========================
+std_dev_all <- sd(df_ndvi$NDVI_magnitude, na.rm = TRUE)
+mean_value <- 0.28
+
+# Calculate the "one standard deviation away" range from the mean of 0.28
+lower_limit <- mean_value - std_dev_all
+upper_limit <- mean_value + std_dev_all
+
+# ========================
+# Calculate the Mean NDVI Magnitude for Each Quarter
+# ========================
+quarter_means <- df_ndvi %>%
+  group_by(tBreak_quarter) %>%
+  summarise(mean_NDVI = mean(NDVI_magnitude, na.rm = TRUE))
+
+# ========================
+# Check which quarters have their means within one standard deviation of 0.28
+# ========================
+quarter_means <- quarter_means %>%
+  mutate(within_one_sd = mean_NDVI >= lower_limit & mean_NDVI <= upper_limit)
+
+# Print out which quarters are within one standard deviation
+print(quarter_means %>% filter(within_one_sd), n=37)
+
+
+# Calculate mean and standard deviation of NDVI for each quarter
+quarterly_stats <- df_ndvi %>%
+  group_by(tBreak_quarter) %>%
+  summarise(
+    mean_ndvi = mean(NDVI_magnitude, na.rm = TRUE),
+    sd_ndvi = sd(NDVI_magnitude, na.rm = TRUE)
+  )
+
+# Identify if the mean is outside one standard deviation from 0.28
+target_value <- 0.28
+quarterly_stats <- quarterly_stats %>%
+  mutate(
+    outside_sd = (mean_ndvi < target_value - sd_ndvi) | (mean_ndvi > target_value + sd_ndvi)
+  )
+
+# Filter to show only the quarters where the mean NDVI is outside 1 SD from 0.28
+df_outside_sd_means <- quarterly_stats %>%
+  filter(outside_sd == TRUE)
+
+# View the result
+print(df_outside_sd_means)
+
+
+# ========================
+# OPTION 1: Same Color with Vertical Lines (Updated for Correct Dot Positioning and Horizontal Choppy Line)
+# ========================
+violin_plot_same_color <- ggplot(df_ndvi, aes(x = factor(Year_Integer), y = NDVI_magnitude, group = tBreak_quarter)) +
+  geom_violin(fill = "lightblue",  # Same color for all violins
+              color = "black", 
+              width = 0.9, 
+              trim = FALSE, 
+              na.rm = TRUE) +
+  geom_vline(xintercept = seq(1.5, length(unique(df_ndvi$Year_Integer)), 1), 
+             linetype = "dashed", 
+             color = "gray50") +  # Add dashed lines between years
+  # Only add points where there is data for that year (no missing data for the quarters)
+  stat_summary(aes(x = factor(Year_Integer), y = NDVI_magnitude, group = interaction(Year_Integer, tBreak_quarter)),  
+               fun = mean, 
+               geom = "point", 
+               shape = 20, 
+               size = 2, 
+               color = "red",
+               position = position_dodge(width = 0.9), 
+               na.rm = TRUE) +  # Ensure correct position and remove NAs
+  geom_hline(yintercept = 0.28, linetype = "dotted", color = "blue", size = 1) +  # Add choppy line at y = 0.28
+  labs(title = "NDVI Magnitude Distribution by Year and Quarter (allMangrove = 1)",
+       x = "Year",
+       y = "Mean NDVI Magnitude") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(size = 16, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.position = "none") +  # Hide legend
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_discrete(expand = expansion(mult = c(0.1, 0.1)))  # Add spacing between groups
+
+# ========================
+# Save and Print the Updated Plot
+# ========================
+print(violin_plot_same_color)
+ggsave("NDVI_Violin_Plot_Same_Color_With_Lines_and_Horizontal_Line_Updated.svg", violin_plot_same_color, width = 12, height = 6)
+
+# ========================
+# Create summary table with mean NDVI_magnitude for each year-quarter
+# ========================
+summary_table <- df_ndvi %>%
+  group_by(Year_Integer, tBreak_quarter) %>%
+  summarise(mean_NDVI_magnitude = mean(NDVI_magnitude, na.rm = TRUE)) %>%
+  arrange(Year_Integer, tBreak_quarter)
+
+# View the summary table
+print(summary_table, n=42)
+
+# ========================
+# OPTION 2: Different Fill Colors for Each Year (Updated for Correct Dot Positioning)
+# ========================
+violin_plot_colors <- ggplot(df_ndvi, aes(x = factor(Year_Integer), y = NDVI_magnitude, group = tBreak_quarter)) +
+  geom_violin(aes(fill = factor(Year_Integer)), 
+              trim = FALSE, 
+              color = "black", 
+              width = 0.9, 
+              na.rm = TRUE) +
+  stat_summary(aes(x = factor(Year_Integer), y = NDVI_magnitude, group = interaction(Year_Integer, tBreak_quarter)),  
+               fun = mean, 
+               geom = "point", 
+               shape = 20, 
+               size = 2, 
+               color = "red",
+               position = position_dodge(width = 0.9)) +  
+  labs(title = "NDVI Magnitude Distribution by Year and Quarter (allMangrove = 1)",
+       x = "Year",
+       y = "Mean NDVI Magnitude") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(size = 16, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.position = "none") +  # Hide legend
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_discrete(expand = expansion(mult = c(0.1, 0.1))) +  # Add spacing between groups
+  scale_fill_viridis_d(option = "turbo", begin = 0.1, end = 0.9, direction = 1)  # Different colors for each year
+
+# ========================
+# Save and Print the Updated Plot
+# ========================
+print(violin_plot_colors)
+ggsave("NDVI_Violin_Plot_With_Colors.svg", violin_plot_colors, width = 12, height = 6)
+
+# ========================
+# OPTION 3: Box Plot with Different Fill Colors for Each Year (No Mean Dots)
+# ========================
+box_plot_colors <- ggplot(df_ndvi, aes(x = factor(Year_Integer), y = NDVI_magnitude, group = tBreak_quarter)) +
+  geom_boxplot(aes(fill = factor(Year_Integer)), 
+               color = "black", 
+               width = 0.7, 
+               outlier.color = "black", 
+               outlier.size = 1.5, 
+               na.rm = TRUE) +
+  labs(title = "NDVI Magnitude Distribution by Year and Quarter (allMangrove = 1)",
+       x = "Year",
+       y = "NDVI Magnitude") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(size = 16, face = "bold"),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.position = "none") +  # Hide legend
+  scale_y_continuous(labels = scales::comma) +
+  scale_x_discrete(expand = expansion(mult = c(0.1, 0.1))) +  # Add spacing between groups
+  scale_fill_viridis_d(option = "turbo", begin = 0.1, end = 0.9, direction = 1)  # Different colors for each year
+
+# ========================
+# Save and Print the Updated Box Plot
+# ========================
+print(box_plot_colors)
+ggsave("NDVI_Box_Plot_With_Colors_No_Mean.svg", box_plot_colors, width = 12, height = 6)
+
+# ========================
+# Load required libraries
+# ========================
+library(ggplot2)
+library(dplyr)
+library(scales)
+
+# ========================
+# Read in all CSV files for loss
+# ========================
+bare_loss <- read.csv("Bare_Mean_NDVI_Loss_By_Quarter.csv")
+built_loss <- read.csv("Built_Mean_NDVI_Loss_By_Quarter.csv")
+forest_loss <- read.csv("Forest_Mean_NDVI_Loss_By_Quarter.csv")
+vegetation_loss <- read.csv("Vegetation_Mean_NDVI_Loss_By_Quarter.csv")
+water_loss <- read.csv("Water_Mean_NDVI_Loss_By_Quarter.csv")
+
+# ========================
+# Combine all loss data into a single data frame
+# ========================
+df_loss <- rbind(
+  data.frame(LandCover = "Bare", NDVI_magnitude = bare_loss$Mean_NDVI_magnitude, Type = "Loss"),
+  data.frame(LandCover = "Built", NDVI_magnitude = built_loss$Mean_NDVI_magnitude, Type = "Loss"),
+  data.frame(LandCover = "Forest", NDVI_magnitude = forest_loss$Mean_NDVI_magnitude, Type = "Loss"),
+  data.frame(LandCover = "Vegetation", NDVI_magnitude = vegetation_loss$Mean_NDVI_magnitude, Type = "Loss"),
+  data.frame(LandCover = "Water", NDVI_magnitude = water_loss$Mean_NDVI_magnitude, Type = "Loss")
+)
+
+# ========================
+# Filter out zero NDVI magnitudes
+# ========================
+df_loss <- df_loss %>%
+  filter(NDVI_magnitude != 0)
+
+# ========================
+# Create summary stats (mean + sample size) for annotation
+# ========================
+summary_df <- df_loss %>%
+  group_by(LandCover) %>%
+  summarise(
+    mean_val = mean(NDVI_magnitude, na.rm = TRUE),
+    n = n()
+  )
+
+# ========================
+# Print the means to console
+# ========================
+print(summary_df)
+
+# ========================
+# Create the Box Plot
+# ========================
+box_plot_colors <- ggplot(df_loss, aes(x = LandCover, y = NDVI_magnitude, fill = LandCover, group = LandCover)) +
+  geom_boxplot(
+    color = "black", 
+    width = 0.7, 
+    outlier.color = "black", 
+    outlier.size = 1.5, 
+    na.rm = TRUE
+  ) +
+  # Add sample size (n) above each box
+  geom_text(
+    data = summary_df,
+    aes(x = LandCover, y = max(df_loss$NDVI_magnitude) + 0.01, label = paste0("n = ", n)),
+    inherit.aes = FALSE,
+    size = 4
+  ) +
+  labs(
+    title = "NDVI Magnitude Distribution by Land Cover Type (Loss Only)",
+    x = "Land Cover Type",
+    y = "Mean NDVI Magnitude"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.position = "none"
+  ) +
+  scale_y_continuous(labels = comma) +
+  scale_x_discrete(expand = expansion(mult = c(0.1, 0.1))) +
+  scale_fill_manual(
+    values = c(
+      "Bare" = "brown",
+      "Built" = "red",
+      "Forest" = "green",
+      "Vegetation" = "lightgreen",
+      "Water" = "blue"
+    )
+  )
+
+# ========================
+# Save and Print the Box Plot
+# ========================
+print(box_plot_colors)
+ggsave("NDVI_Box_Plot_LandCover_Type_Loss_Only.svg", box_plot_colors, width = 12, height = 6)
+
+# ========================
+# Run One-Way ANOVA
+# ========================
+anova_result <- aov(NDVI_magnitude ~ LandCover, data = df_loss)
+summary(anova_result)
+
+# Post-hoc Tukey HSD test to find out where the differences lie
+tukey_result <- TukeyHSD(anova_result)
+
+# Get the Tukey results in a data frame format
+tukey_df <- as.data.frame(tukey_result$LandCover)
+
+# ========================
+# Assign letters based on Tukey results
+# ========================
+# Create a function to assign letters based on the p-values
+assign_letters <- function(p_value) {
+  if (p_value < 0.05) {
+    return("a")  # If significant difference, assign 'a'
+  } else {
+    return("b")  # If not significant, assign 'b'
+  }
+}
+
+# Add a column with assigned letters based on p-values
+tukey_df$Letters <- sapply(tukey_df$`p adj`, assign_letters)
+
+# ========================
+# Create a list of boxes and their letters
+# ========================
+# We'll extract the comparisons and assign letters to the LandCover types.
+comparison_results <- data.frame(
+  Comparison = rownames(tukey_df),
+  Letters = tukey_df$Letters
+)
+
+# Print the results
+print(comparison_results)
+
