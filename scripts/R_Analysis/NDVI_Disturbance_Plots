@@ -1,0 +1,284 @@
+# Set working directory
+setwd("C:/Users/marie/OneDrive - East Carolina University/RStudio")
+getwd()
+
+# Load required packages
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(patchwork)
+
+# Read the main NDVI data
+data <- read.csv("ndvi_polygons_optimized_03182025_classes_clean.csv")
+
+# Define corrected disturbance labels (excluding disturbances 3 and 6)
+disturbance_labels <- c(
+  "1" = "Built",
+  "2" = "Hurricane Jobos",
+  "10" = "Drought",
+  "5" = "Hurricane Lajas",
+  "7" = "Hurricane RG",
+  "8" = "Earthquake Guanica",
+  "9" = "Hurricane Guanica"
+)
+
+# Filter data to only include relevant disturbances
+df_ndvi <- data %>% filter(disturbance %in% as.numeric(names(disturbance_labels)))
+
+# Extract column names representing years with decimals
+year_cols <- grep("^X\\d{4}(\\.\\d+)?$", names(df_ndvi), value = TRUE)
+
+# Reshape NDVI data from wide to long format
+df_long <- df_ndvi %>%
+  pivot_longer(cols = all_of(year_cols),
+               names_to = "Year_Decimal",
+               values_to = "NDVI_magnitude") %>%
+  mutate(
+    Year_Decimal = gsub("X", "", Year_Decimal),
+    Year_Decimal = as.numeric(Year_Decimal),
+    Year = floor(Year_Decimal),
+    Decimal = Year_Decimal - Year,
+    Year_Quarter_Value = Year + Decimal
+  ) %>%
+  filter(Year_Quarter_Value <= 2023.75)
+
+# Assign disturbance names
+df_long$Disturbance_Name <- factor(df_long$disturbance, labels = disturbance_labels)
+
+# Define disturbance periods for shading
+disturbance_periods <- data.frame(
+  Disturbance_Name = c("Built", "Hurricane Jobos", "Drought", "Hurricane Lajas", "Hurricane RG", "Earthquake Guanica", "Hurricane Guanica"),
+  xmin = c(2017.75, 2017.75, 2015.0, 2017.75, 2017.75, 2020.0, 2017.75),
+  xmax = c(2018.0, 2018.0, 2016.0, 2018.0, 2018.0, 2020.25, 2018.0)
+)
+
+# Store individual plots
+plot_list <- list()
+
+for (disturbance_name in names(disturbance_labels)) {
+  disturbance_label <- disturbance_labels[[disturbance_name]]
+  df_disturbance <- df_long %>%
+    filter(Disturbance_Name == disturbance_label, !is.na(NDVI_magnitude))
+  
+  xmin_value <- disturbance_periods$xmin[disturbance_periods$Disturbance_Name == disturbance_label]
+  xmax_value <- disturbance_periods$xmax[disturbance_periods$Disturbance_Name == disturbance_label]
+  
+  df_disturbance$Season <- ifelse(
+    df_disturbance$Year_Quarter_Value <= xmin_value, "Pre-disturbance",
+    ifelse(df_disturbance$Year_Quarter_Value >= xmax_value, "Post-disturbance", NA)
+  )
+  
+  ndvi_plot <- ggplot(df_disturbance, aes(x = Year_Quarter_Value, y = NDVI_magnitude)) +
+    geom_point(size = 1.5, alpha = 0.8) +
+    geom_smooth(aes(color = Season), data = df_disturbance %>% filter(!is.na(Season)),
+                method = "loess", se = TRUE, size = 1) +
+    geom_rect(data = subset(disturbance_periods, Disturbance_Name == disturbance_label),
+              aes(xmin = xmin, xmax = xmax, ymin = -Inf, ymax = Inf),
+              inherit.aes = FALSE, fill = "grey", alpha = 0.5) +
+    labs(title = paste("NDVI Before and After", disturbance_label),
+         x = "Year (with Corrected Quarters)",
+         y = "Mean NDVI Magnitude",
+         color = "Season") +
+    theme_minimal(base_size = 14) +
+    theme(plot.title = element_text(size = 16, face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+          axis.text.y = element_text(size = 10)) +
+    scale_color_manual(values = c("Pre-disturbance" = "#E41A1C", "Post-disturbance" = "#377EB8")) +
+    scale_x_continuous(
+      limits = c(2014, 2023.75),
+      breaks = seq(2014, 2023.75, 0.25),
+      labels = function(x) {
+        year <- floor(x)
+        quarter <- round((x - year) * 4)
+        paste0(year, " Q", quarter + 1)
+      }
+    )
+  
+  plot_list[[disturbance_label]] <- ndvi_plot
+  ggsave(paste0("ndvi_", disturbance_label, "_plot.svg"), ndvi_plot, width = 12, height = 8, dpi = 300)
+}
+
+# Recreate panels with consistent y-axis limits
+ndvi_y_limits <- range(df_long$NDVI_magnitude, na.rm = TRUE)
+plot_list <- lapply(plot_list, function(p) p + coord_cartesian(ylim = ndvi_y_limits))
+
+# Panels
+hurricane_panel <- plot_list[["Hurricane Lajas"]] +
+  plot_list[["Hurricane Guanica"]] +
+  plot_list[["Hurricane Jobos"]] +
+  plot_list[["Hurricane RG"]] +
+  plot_layout(ncol = 1) +
+  plot_annotation(title = "NDVI Comparison: All Hurricanes")
+ggsave("ndvi_hurricane_panel_with_same_y_axis.svg", hurricane_panel, width = 12, height = 20, dpi = 300)
+
+built_drought_earthquake_panel <- plot_list[["Built"]] +
+  plot_list[["Drought"]] +
+  plot_list[["Earthquake Guanica"]] +
+  plot_layout(ncol = 1) +
+  plot_annotation(title = "NDVI Comparison: Built, Drought, and Earthquake")
+ggsave("ndvi_built_drought_earthquake_panel.svg", built_drought_earthquake_panel, width = 12, height = 15, dpi = 300)
+
+cat("Cleaned version complete! Plots generated and saved with consistent y-axis.\n")
+
+cat("\n=== NDVI Ranges: Pre and Post Disturbance ===\n\n")
+
+# Loop through each disturbance to calculate NDVI ranges
+for (disturbance_name in names(disturbance_labels)) {
+  
+  # Filter the disturbance label
+  disturbance_label <- disturbance_labels[[disturbance_name]]
+  
+  # Subset data for the current disturbance
+  df_disturbance <- df_long %>%
+    filter(Disturbance_Name == disturbance_label) %>%
+    filter(!is.na(NDVI_magnitude))
+  
+  # Get disturbance shading range
+  xmin_value <- disturbance_periods$xmin[disturbance_periods$Disturbance_Name == disturbance_label]
+  xmax_value <- disturbance_periods$xmax[disturbance_periods$Disturbance_Name == disturbance_label]
+  
+  # Assign pre/post-disturbance season
+  df_disturbance$Season <- ifelse(
+    df_disturbance$Year_Quarter_Value <= xmin_value, "Pre-disturbance",
+    ifelse(df_disturbance$Year_Quarter_Value >= xmax_value, "Post-disturbance", NA)
+  )
+  
+  # Calculate range for pre and post
+  range_pre <- range(df_disturbance$NDVI_magnitude[df_disturbance$Season == "Pre-disturbance"], na.rm = TRUE)
+  range_post <- range(df_disturbance$NDVI_magnitude[df_disturbance$Season == "Post-disturbance"], na.rm = TRUE)
+  
+  # Print result
+  cat(paste0(disturbance_label, "\n"))
+  cat(paste0(" Pre-disturbance NDVI range: ", round(range_pre[1], 4), " to ", round(range_pre[2], 4), "\n"))
+  cat(paste0(" Post-disturbance NDVI range: ", round(range_post[1], 4), " to ", round(range_post[2], 4), "\n\n"))
+}
+
+cat("\n=== Mean NDVI: Pre and Post Disturbance ===\n\n")
+
+# Loop through each disturbance to calculate mean NDVI
+for (disturbance_name in names(disturbance_labels)) {
+  
+  # Get the readable label for disturbance
+  disturbance_label <- disturbance_labels[[disturbance_name]]
+  
+  # Filter data for this disturbance
+  df_disturbance <- df_long %>%
+    filter(Disturbance_Name == disturbance_label) %>%
+    filter(!is.na(NDVI_magnitude))
+  
+  # Get disturbance timing for shading
+  xmin_value <- disturbance_periods$xmin[disturbance_periods$Disturbance_Name == disturbance_label]
+  xmax_value <- disturbance_periods$xmax[disturbance_periods$Disturbance_Name == disturbance_label]
+  
+  # Assign pre/post-disturbance labels
+  df_disturbance$Season <- ifelse(
+    df_disturbance$Year_Quarter_Value <= xmin_value, "Pre-disturbance",
+    ifelse(df_disturbance$Year_Quarter_Value >= xmax_value, "Post-disturbance", NA)
+  )
+  
+  # Calculate means
+  mean_pre <- mean(df_disturbance$NDVI_magnitude[df_disturbance$Season == "Pre-disturbance"], na.rm = TRUE)
+  mean_post <- mean(df_disturbance$NDVI_magnitude[df_disturbance$Season == "Post-disturbance"], na.rm = TRUE)
+  
+  # Print result
+  cat(paste0(disturbance_label, "\n"))
+  cat(paste0(" Pre-disturbance Mean NDVI: ", round(mean_pre, 4), "\n"))
+  cat(paste0(" Post-disturbance Mean NDVI: ", round(mean_post, 4), "\n\n"))
+}
+
+cat("\n=== NDVI Range (Excluding Outliers): Pre and Post Disturbance ===\n\n")
+
+# Function to calculate non-outlier range using IQR method
+calc_non_outlier_range <- function(x) {
+  x <- na.omit(x)
+  q1 <- quantile(x, 0.25)
+  q3 <- quantile(x, 0.75)
+  iqr <- q3 - q1
+  lower <- q1 - 1.5 * iqr
+  upper <- q3 + 1.5 * iqr
+  non_outliers <- x[x >= lower & x <= upper]
+  return(range(non_outliers, na.rm = TRUE))
+}
+
+# Loop through disturbances
+for (disturbance_name in names(disturbance_labels)) {
+  
+  disturbance_label <- disturbance_labels[[disturbance_name]]
+  
+  df_disturbance <- df_long %>%
+    filter(Disturbance_Name == disturbance_label) %>%
+    filter(!is.na(NDVI_magnitude))
+  
+  xmin_value <- disturbance_periods$xmin[disturbance_periods$Disturbance_Name == disturbance_label]
+  xmax_value <- disturbance_periods$xmax[disturbance_periods$Disturbance_Name == disturbance_label]
+  
+  df_disturbance$Season <- ifelse(
+    df_disturbance$Year_Quarter_Value <= xmin_value, "Pre-disturbance",
+    ifelse(df_disturbance$Year_Quarter_Value >= xmax_value, "Post-disturbance", NA)
+  )
+  
+  # Get values for pre and post disturbance
+  pre_disturbance <- df_disturbance$NDVI_magnitude[df_disturbance$Season == "Pre-disturbance"]
+  post_disturbance <- df_disturbance$NDVI_magnitude[df_disturbance$Season == "Post-disturbance"]
+  
+  # Calculate non-outlier ranges
+  range_pre_non_outliers <- calc_non_outlier_range(pre_disturbance)
+  range_post_non_outliers <- calc_non_outlier_range(post_disturbance)
+  
+  # Print results
+  cat(paste0(disturbance_label, "\n"))
+  cat(paste0("    Pre-disturbance Non-Outlier NDVI range: ", round(range_pre_non_outliers[1], 4), " to ", round(range_pre_non_outliers[2], 4), "\n"))
+  cat(paste0("    Post-disturbance Non-Outlier NDVI range: ", round(range_post_non_outliers[1], 4), " to ", round(range_post_non_outliers[2], 4), "\n\n"))
+}
+
+# Loop through each disturbance to create histograms
+cat("\n === Histograms: Frequency of NDVI Captures per Year (Pre and Post Disturbance) ===\n\n")
+
+# Loop through each disturbance to generate histograms
+for (disturbance_name in names(disturbance_labels)) {
+  
+  # Get the readable label for disturbance
+  disturbance_label <- disturbance_labels[[disturbance_name]]
+  
+  # Filter data for this disturbance and exclude NA values
+  df_disturbance <- df_long %>%
+    filter(Disturbance_Name == disturbance_label) %>%
+    filter(!is.na(NDVI_magnitude))
+  
+  # Get disturbance timing for shading
+  xmin_value <- disturbance_periods$xmin[disturbance_periods$Disturbance_Name == disturbance_label]
+  xmax_value <- disturbance_periods$xmax[disturbance_periods$Disturbance_Name == disturbance_label]
+  
+  # Assign pre/post-disturbance labels
+  df_disturbance$Season <- ifelse(
+    df_disturbance$Year_Quarter_Value <= xmin_value, "Pre-disturbance",
+    ifelse(df_disturbance$Year_Quarter_Value >= xmax_value, "Post-disturbance", NA)
+  )
+  
+  # Summarize data to get the frequency of NDVI captures per year
+  year_frequency <- df_disturbance %>%
+    mutate(Year = floor(Year_Quarter_Value)) %>%  # Extract the year
+    group_by(Year) %>%
+    summarize(Frequency = n())  # Count the number of captures in each year
+  
+  # Create histogram plot for frequency of NDVI captures per year
+  hist_plot <- ggplot(year_frequency, aes(x = Year, y = Frequency)) +
+    geom_bar(stat = "identity", fill = "#0072B2", alpha = 0.7) +
+    labs(title = paste("Frequency of NDVI Captures per Year -", disturbance_label),
+         x = "Year",
+         y = "Frequency of NDVI Captures") +
+    theme_minimal(base_size = 14) +
+    theme(plot.title = element_text(size = 16, face = "bold"),
+          axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+          axis.text.y = element_text(size = 10)) +
+    scale_x_continuous(breaks = seq(min(year_frequency$Year), max(year_frequency$Year), 1))
+  
+  # Save the histogram plot as a .svg file
+  ggsave(paste0("ndvi_histogram_", disturbance_label, ".svg"), hist_plot, width = 12, height = 8, dpi = 300)
+  
+  # Print histogram results to the console
+  cat(paste0(disturbance_label, "\n"))
+  cat("   Histogram saved as ", paste0("ndvi_histogram_", disturbance_label, ".svg"), "\n\n")
+}
+
+cat("\Histograms generated and saved for each disturbance!\n")
